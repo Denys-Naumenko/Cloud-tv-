@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cast4K</title>
+<style>
+:root{--bg:#0e0f13;--card:#181a21;--line:#2a2d37;--text:#eceef3;--muted:#8b90a0;--acc:#5b8cff;--ok:#3ecf8e;--err:#ff6b6b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 16px 120px}
+h1{font-size:26px;margin:0 0 4px}
+.sub{color:var(--muted);margin-bottom:20px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:16px}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 12px;display:flex;justify-content:space-between;align-items:center}
+button{background:#262a35;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--acc)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600;font-size:17px;padding:14px 22px;width:100%}
+button:disabled{opacity:.45;cursor:default}
+.list{display:flex;flex-direction:column;gap:6px;max-height:340px;overflow:auto}
+.item{padding:10px 12px;border-radius:10px;border:1px solid transparent;cursor:pointer;display:flex;justify-content:space-between;gap:12px}
+.item:hover{background:#1f222b}
+.item.sel{border-color:var(--acc);background:#1c2233}
+.item small{color:var(--muted);white-space:nowrap}
+.name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+select,input[type=text]{background:#11131a;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font:inherit;min-width:0;flex:1}
+.badges span{display:inline-block;background:#262a35;border-radius:6px;padding:2px 8px;margin:0 6px 6px 0;font-size:13px}
+.muted{color:var(--muted)}
+.player{position:fixed;left:0;right:0;bottom:0;background:#12141acc;backdrop-filter:blur(12px);border-top:1px solid var(--line);padding:12px 16px}
+.player .in{max-width:860px;margin:0 auto}
+input[type=range]{width:100%;accent-color:var(--acc)}
+.err{color:var(--err)} .ok{color:var(--ok)}
+label{color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<main>
+  <h1>📺 Cast4K</h1>
+  <div class="sub">Фільм із Mac → телевізор, без втрати якості.</div>
+
+  <section>
+    <h2>Телевізор <button id="scan">Шукати</button></h2>
+    <div id="devices" class="list"><span class="muted">Шукаю телевізори в мережі…</span></div>
+  </section>
+
+  <section>
+    <h2>Фільми <button id="reload">Оновити</button></h2>
+    <div id="files" class="list"><span class="muted">Завантаження…</span></div>
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="path" placeholder="…або встав повний шлях до файлу (/Users/…/movie.mkv)">
+      <button id="addPath">Додати</button>
+    </div>
+  </section>
+
+  <section id="opts" hidden>
+    <h2>Налаштування</h2>
+    <div class="badges" id="badges"></div>
+    <div class="row" style="margin:8px 0">
+      <div style="flex:1;min-width:200px"><label>Аудіо</label><br><select id="audio"></select></div>
+      <div style="flex:1;min-width:200px"><label>Субтитри</label><br><select id="subs"></select></div>
+    </div>
+  </section>
+
+  <button class="primary" id="go" disabled>▶︎ Дивитись на ТВ</button>
+  <div id="msg" style="margin-top:10px"></div>
+</main>
+
+<div class="player" id="player" hidden>
+  <div class="in">
+    <div class="row" style="justify-content:space-between">
+      <div class="name" id="ptitle" style="flex:1"></div>
+      <div class="muted" id="ptime">0:00 / 0:00</div>
+    </div>
+    <input type="range" id="seek" min="0" max="1000" value="0">
+    <div class="row">
+      <button data-j="-30">⏪ 30с</button>
+      <button id="pp">⏸</button>
+      <button data-j="30">30с ⏩</button>
+      <button id="stop">⏹</button>
+      <span style="flex:1"></span>
+      <label>🔊</label><input type="range" id="vol" min="0" max="100" style="width:120px">
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let device = localStorage.getItem('dev'), file = null, status = {}, dragging = false;
+
+async function api(path, body) {
+  const r = await fetch(path, body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+const fmt = s => { s = Math.max(0, Math.floor(s||0)); const h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=s%60;
+  return (h? h+':'+String(m).padStart(2,'0') : m) + ':' + String(x).padStart(2,'0'); };
+const msg = (t, cls='') => { $('#msg').className = cls; $('#msg').textContent = t; };
+const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const upd = () => $('#go').disabled = !(device && file);
+
+async function scan() {
+  $('#devices').innerHTML = '<span class="muted">Шукаю телевізори в мережі…</span>';
+  try {
+    const {devices} = await api('/api/devices');
+    if (!devices.length) {
+      $('#devices').innerHTML = '<span class="err">Нічого не знайдено. ТВ увімкнений і в тій самій Wi-Fi? Натисни «Шукати» ще раз.</span>';
+      return;
+    }
+    if (!devices.some(d => d.id === device)) device = devices.length === 1 ? devices[0].id : null;
+    $('#devices').innerHTML = devices.map(d =>
+      `<div class="item ${d.id===device?'sel':''}" data-id="${d.id}"><span class="name">${esc(d.name)}</span><small>${esc(d.model||'')}</small></div>`).join('');
+    $('#devices').querySelectorAll('.item').forEach(el => el.onclick = () => {
+      device = el.dataset.id; localStorage.setItem('dev', device);
+      $('#devices').querySelectorAll('.item').forEach(x => x.classList.toggle('sel', x === el)); upd();
+    });
+    upd();
+  } catch (e) { $('#devices').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+async function loadFiles() {
+  const {files, folders} = await api('/api/files');
+  $('#files').innerHTML = files.length ? files.map(f =>
+    `<div class="item" data-id="${f.id}" title="${esc(f.folder)}"><span class="name">${esc(f.name)}</span><small>${f.size_gb} ГБ</small></div>`).join('')
+    : `<span class="muted">Немає відео в ${esc(folders.join(', '))}</span>`;
+  $('#files').querySelectorAll('.item').forEach(el => el.onclick = () => select(el.dataset.id, el));
+}
+
+async function select(id, el) {
+  file = id; upd();
+  document.querySelectorAll('#files .item').forEach(x => x.classList.toggle('sel', x === el));
+  $('#opts').hidden = false; $('#badges').innerHTML = '<span>аналізую…</span>';
+  const i = await api('/api/info?id=' + id);
+  $('#badges').innerHTML = [i.resolution, (i.video||'').toUpperCase(), i.hdr, fmt(i.duration),
+    i.direct ? 'пряма передача' : 'ремукс на льоту (без втрати якості відео)'].filter(Boolean).map(b => `<span>${esc(b)}</span>`).join('');
+  $('#audio').innerHTML = i.audio.map(a => `<option value="${a.index}">${esc(a.label)}</option>`).join('') || '<option value="">—</option>';
+  $('#subs').innerHTML = '<option value="">Без субтитрів</option>' + i.subs.map(s => `<option value="${s.index}">${esc(s.label)}</option>`).join('');
+}
+
+$('#go').onclick = async () => {
+  $('#go').disabled = true; msg('Запускаю на ТВ…');
+  try {
+    const a = $('#audio').value;
+    await api('/api/play', {file, device, audio: a === '' ? null : a, sub: $('#subs').value || null});
+    msg('Грає! 🍿', 'ok');
+  } catch (e) { msg('Помилка: ' + e.message, 'err'); }
+  upd();
+};
+
+$('#addPath').onclick = async () => {
+  try {
+    const {id, name} = await api('/api/add', {path: $('#path').value.trim()});
+    const el = document.createElement('div'); el.className = 'item'; el.dataset.id = id;
+    el.innerHTML = `<span class="name">${esc(name)}</span>`; el.onclick = () => select(id, el);
+    $('#files').prepend(el); select(id, el);
+  } catch (e) { msg(e.message, 'err'); }
+};
+
+const ctl = (action, value) => api('/api/control', {action, value}).catch(e => msg(e.message, 'err'));
+$('#pp').onclick = () => ctl(status.state === 'PLAYING' ? 'pause' : 'play');
+$('#stop').onclick = () => ctl('stop');
+document.querySelectorAll('[data-j]').forEach(b => b.onclick = () => ctl('jump', +b.dataset.j));
+$('#seek').oninput = () => { dragging = true; $('#ptime').textContent = fmt($('#seek').value/1000*status.duration) + ' / ' + fmt(status.duration); };
+$('#seek').onchange = () => { ctl('seek', $('#seek').value/1000*status.duration); setTimeout(() => dragging = false, 1500); };
+$('#vol').onchange = () => ctl('volume', +$('#vol').value);
+
+async function poll() {
+  try {
+    status = await api('/api/status');
+    const on = status.connected && status.state && status.state !== 'UNKNOWN' && status.state !== 'IDLE';
+    $('#player').hidden = !on;
+    if (on) {
+      $('#ptitle').textContent = `${status.title} — ${status.device}`;
+      $('#pp').textContent = status.state === 'PLAYING' ? '⏸' : '▶︎';
+      if (!dragging) {
+        $('#ptime').textContent = fmt(status.position) + ' / ' + fmt(status.duration);
+        $('#seek').value = status.duration ? status.position / status.duration * 1000 : 0;
+      }
+      if (document.activeElement !== $('#vol')) $('#vol').value = status.volume;
+    }
+  } catch {}
+  setTimeout(poll, 1000);
+}
+
+$('#scan').onclick = scan; $('#reload').onclick = loadFiles;
+scan(); loadFiles(); poll();
+</script>
+</body>
+</html>
